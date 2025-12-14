@@ -148,6 +148,7 @@ function renderApprovalList(list = []) {
 
     list.forEach((item) => {
         const statusInfo = formatStatus(item.status);
+        const isPending = (item.status || '').toUpperCase() === 'PENDING';
         const card = document.createElement('div');
         card.className = 'approval-card';
         card.innerHTML = `
@@ -159,11 +160,11 @@ function renderApprovalList(list = []) {
                 <p class="muted">提交人：${item.submittedBy || '未知'} · ${formatDateTime(item.createdAt)}</p>
                 <p class="muted">统一信用代码：${item.creditCode || '-'}</p>
                 ${item.decisionByName || item.decisionReason ? `<p class="muted">审批人：${item.decisionByName || item.decisionBy || '—'}${item.decisionReason ? ` · ${item.decisionReason}` : ''}</p>` : ''}
-            </div>
-            <div class="approval-actions">
-                <button class="ghost-btn" data-approval-action="view" data-id="${item.id}">查看</button>
-                <button class="ghost-btn" data-approval-action="approve" data-id="${item.id}">同意</button>
-                <button class="ghost-btn" data-approval-action="reject" data-id="${item.id}">拒绝</button>
+                </div>
+                <div class="approval-actions">
+                    <button class="ghost-btn" data-approval-action="view" data-id="${item.id}">查看</button>
+                <button class="ghost-btn" data-approval-action="approve" data-id="${item.id}" ${isPending ? '' : 'disabled'}>同意</button>
+                <button class="ghost-btn" data-approval-action="reject" data-id="${item.id}" ${isPending ? '' : 'disabled'}>拒绝</button>
             </div>
         `;
         listEl.appendChild(card);
@@ -267,6 +268,11 @@ function setupApprovalModule() {
 
             if (!currentUser || currentUser.role !== 'ADMIN') {
                 setBanner('请先使用管理员账号登录', true);
+                return;
+            }
+
+            if (submission && (submission.status || '').toUpperCase() !== 'PENDING') {
+                setBanner('该提交已处理，无法修改审批结果。', true);
                 return;
             }
 

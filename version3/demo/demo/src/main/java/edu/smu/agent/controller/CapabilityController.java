@@ -98,6 +98,17 @@ public class CapabilityController {
             return ResponseEntity.badRequest().body(Map.of("message", "请填写审批理由"));
         }
 
+        Submission existing = submissionService.getSubmission(id);
+        if (existing == null) {
+            return ResponseEntity.notFound().build();
+        }
+        if (existing.getStatus() != Status.PENDING) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "message", "该申请已处理，无法再次修改审批结果"
+            ));
+        }
+
         Status status;
         if ("approve".equalsIgnoreCase(decision)) {
             status = Status.APPROVED;
@@ -109,10 +120,10 @@ public class CapabilityController {
 
         Submission updated = submissionService.decide(
                 id,
-                status,
-                remark,
-                session.username(),
-                session.displayName());
+            status,
+            remark,
+            session.username(),
+            session.displayName());
         if (updated == null) {
             return ResponseEntity.notFound().build();
         }

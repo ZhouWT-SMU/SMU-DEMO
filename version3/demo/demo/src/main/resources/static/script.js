@@ -62,6 +62,29 @@ function restoreSession(type) {
     return safeJsonParse(raw, null);
 }
 
+async function verifySession(type) {
+    const stored = restoreSession(type);
+    if (!stored || !stored.token) {
+        return null;
+    }
+
+    try {
+        const response = await fetch(`/api/auth/validate?token=${encodeURIComponent(stored.token)}`);
+        const payload = await response.json();
+
+        if (!response.ok || !payload.success) {
+            throw new Error('会话已失效');
+        }
+
+        const merged = { ...stored, ...payload };
+        persistSession(type, merged);
+        return merged;
+    } catch (error) {
+        persistSession(type, null);
+        return null;
+    }
+}
+
 function getUserId() {
     if (cachedUserId) {
         return cachedUserId;
@@ -349,10 +372,11 @@ function setupAuth(navigationApi) {
         renderUploadHistory(uploadHistory);
     };
 
-    const stored = restoreSession('enterprise');
-    if (stored) {
-        setSession(stored);
-    }
+    verifySession('enterprise').then((session) => {
+        if (session) {
+            setSession(session);
+        }
+    });
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -411,10 +435,11 @@ function setupAdminAuth() {
         fetchSubmissions();
     };
 
-    const stored = restoreSession('admin');
-    if (stored) {
-        setAdminSession(stored);
-    }
+    verifySession('admin').then((session) => {
+        if (session) {
+            setAdminSession(session);
+        }
+    });
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -557,6 +582,7 @@ function renderApprovalList(list = []) {
 
     list.forEach((item) => {
         const statusInfo = formatStatus(item.status);
+        const isPending = (item.status || '').toUpperCase() === 'PENDING';
                 const card = document.createElement('div');
                 card.className = 'approval-card';
                 card.innerHTML = `
@@ -571,8 +597,8 @@ function renderApprovalList(list = []) {
                     </div>
                     <div class="approval-actions">
                         <button class="ghost-btn" data-approval-action="view" data-id="${item.id}">查看</button>
-                        <button class="ghost-btn" data-approval-action="approve" data-id="${item.id}">同意</button>
-                        <button class="ghost-btn" data-approval-action="reject" data-id="${item.id}">拒绝</button>
+                        <button class="ghost-btn" data-approval-action="approve" data-id="${item.id}" ${isPending ? '' : 'disabled'}>同意</button>
+                        <button class="ghost-btn" data-approval-action="reject" data-id="${item.id}" ${isPending ? '' : 'disabled'}>拒绝</button>
             </div>
         `;
         listEl.appendChild(card);
@@ -661,6 +687,11 @@ function setupApprovalModule() {
 
         if (!adminSession || adminSession.role !== 'ADMIN') {
             setApprovalBanner('请先登录管理员账号后再执行审批。', true);
+            return;
+        }
+
+        if (submission && (submission.status || '').toUpperCase() !== 'PENDING') {
+            setApprovalBanner('该提交已处理，无法修改审批结果。', true);
             return;
         }
 
@@ -782,6 +813,66 @@ function appendMessage(history, role, content, labels, options = {}) {
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
 
     return { element: message, body };
+}
+
+function startThinkingAnimation(target) {
+    if (!target) {
+        return () => {};
+    }
+
+    target.textContent = '正在思考';
+    target.classList.add('thinking');
+
+    const pulse = document.createElement('span');
+    pulse.className = 'dot-pulse';
+    pulse.setAttribute('aria-hidden', 'true');
+    target.appendChild(pulse);
+
+    let frame = 0;
+    const timer = setInterval(() => {
+        frame = (frame + 1) % 3;
+        const dots = '.'.repeat(frame + 1);
+        target.childNodes[0].nodeValue = `正在思考${dots}`;
+    }, 450);
+
+    return () => {
+        clearInterval(timer);
+        target.classList.remove('thinking');
+        if (pulse.parentNode === target) {
+            target.removeChild(pulse);
+        }
+    };
+}
+
+function playTypewriter(target, text, speed = 18) {
+    return new Promise((resolve) => {
+        if (!target) {
+            resolve();
+            return;
+        }
+
+        const characters = Array.from(text || '');
+        if (!characters.length) {
+            resolve();
+            return;
+        }
+
+        target.textContent = '';
+        let index = 0;
+
+        const tick = () => {
+            target.textContent += characters[index];
+            index += 1;
+
+            if (index < characters.length) {
+                setTimeout(tick, speed);
+            } else {
+                resolve();
+            }
+        };
+
+        tick();
+    });
 }
 
 function getMessages(history) {
@@ -1146,6 +1237,14 @@ function setupChatPanels() {
                 }
             }
 
+            if (message.inputs && typeof message.inputs === 'object') {
+                const firstTextInput = Object.values(message.inputs)
+                    .find((value) => typeof value === 'string' && value.trim());
+                if (firstTextInput) {
+                    return firstTextInput;
+                }
+            }
+
             return message.answer || message.query || message.message || message.text || '';
         };
 
@@ -1258,6 +1357,7 @@ function setupChatPanels() {
                 renderMarkdown: false,
             });
             pending.body.textContent = '';
+            let stopThinkingEffect = startThinkingAnimation(pending.body);
             const payload = {
                 message: text,
                 userId: getUserId(),
@@ -1269,8 +1369,21 @@ function setupChatPanels() {
 
             const streamQueue = [];
             let streamAnimation = null;
+            let receivedChunks = false;
+
+            const clearThinkingEffect = () => {
+                if (stopThinkingEffect) {
+                    stopThinkingEffect();
+                    stopThinkingEffect = null;
+                }
+
+                if (pending.body.textContent.startsWith('正在思考')) {
+                    pending.body.textContent = '';
+                }
+            };
 
             const flushQueue = () => {
+                clearThinkingEffect();
                 const batchSize = Math.min(8, Math.max(1, streamQueue.length));
                 const slice = streamQueue.splice(0, batchSize);
 
@@ -1292,6 +1405,9 @@ function setupChatPanels() {
                     return;
                 }
 
+                receivedChunks = true;
+                clearThinkingEffect();
+
                 streamQueue.push(...Array.from(textChunk));
 
                 if (!streamAnimation) {
@@ -1300,6 +1416,7 @@ function setupChatPanels() {
             };
 
             const flushRemaining = () => {
+                clearThinkingEffect();
                 if (streamAnimation) {
                     cancelAnimationFrame(streamAnimation);
                     streamAnimation = null;
@@ -1393,6 +1510,13 @@ function setupChatPanels() {
                 }
 
                 const resolvedAnswer = (finalMeta && finalMeta.answer ? finalMeta.answer : answer || '').trim();
+                clearThinkingEffect();
+
+                if (!receivedChunks && resolvedAnswer) {
+                    // 如果后端未分片返回，也使用打字机效果模拟流式输出
+                    // eslint-disable-next-line no-await-in-loop
+                    await playTypewriter(pending.body, resolvedAnswer);
+                }
 
                 renderAssistantMessage(pending.body, resolvedAnswer || '对话已完成。');
                 pending.element.classList.remove('pending');
@@ -1412,6 +1536,7 @@ function setupChatPanels() {
                 console.error('调用智能助手失败:', error);
                 pending.element.classList.remove('pending');
                 pending.element.classList.add('error');
+                clearThinkingEffect();
 
                 if (replyTemplate) {
                     pending.body.textContent = replyTemplate.replace('{message}', text);
@@ -1424,6 +1549,7 @@ function setupChatPanels() {
                 sendButton.textContent = defaultSendLabel;
                 threadManager.scrollToBottom();
                 historyManager.refreshHistory();
+                clearThinkingEffect();
             }
         };
 
