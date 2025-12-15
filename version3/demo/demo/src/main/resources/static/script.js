@@ -1227,7 +1227,7 @@ function setupChatPanels() {
             }
 
             if (Array.isArray(message.content)) {
-                const contentBlock = message.content.find((block) => block.text || (block.data && block.data.text))
+                const contentBlock = message.content.find((block) => block.text || (block.data && (block.data.text || block.data.content)))
                     || message.content[0];
                 if (contentBlock?.text) {
                     return contentBlock.text;
@@ -1235,17 +1235,42 @@ function setupChatPanels() {
                 if (contentBlock?.data?.text) {
                     return contentBlock.data.text;
                 }
+                if (contentBlock?.data?.content) {
+                    return contentBlock.data.content;
+                }
             }
+
+            const extractFromInputValue = (value) => {
+                if (!value) return '';
+                if (typeof value === 'string') return value;
+                if (typeof value === 'object') {
+                    if (typeof value.text === 'string') return value.text;
+                    if (typeof value.value === 'string') return value.value;
+                    if (Array.isArray(value.values)) {
+                        const joined = value.values.filter((item) => typeof item === 'string' && item.trim()).join('\n');
+                        if (joined) return joined;
+                    }
+                }
+                return '';
+            };
 
             if (message.inputs && typeof message.inputs === 'object') {
                 const firstTextInput = Object.values(message.inputs)
-                    .find((value) => typeof value === 'string' && value.trim());
+                    .map((value) => extractFromInputValue(value))
+                    .find((value) => value && value.trim());
                 if (firstTextInput) {
                     return firstTextInput;
                 }
             }
 
-            return message.answer || message.query || message.message || message.text || '';
+            if (message.data && typeof message.data === 'object') {
+                const dataText = extractFromInputValue(message.data.query || message.data.text || message.data.content);
+                if (dataText) {
+                    return dataText;
+                }
+            }
+
+            return message.query || message.message || message.text || message.answer || '';
         };
 
         async function loadConversation(entry) {
@@ -1384,17 +1409,16 @@ function setupChatPanels() {
 
             const flushQueue = () => {
                 clearThinkingEffect();
-                const batchSize = Math.min(8, Math.max(1, streamQueue.length));
-                const slice = streamQueue.splice(0, batchSize);
+                const char = streamQueue.shift();
 
-                slice.forEach((char) => {
+                if (char !== undefined) {
                     pending.body.textContent += char;
-                });
+                }
 
                 threadManager.scrollToBottom();
 
                 if (streamQueue.length > 0) {
-                    streamAnimation = requestAnimationFrame(flushQueue);
+                    streamAnimation = setTimeout(flushQueue, 22);
                 } else {
                     streamAnimation = null;
                 }
@@ -1411,14 +1435,14 @@ function setupChatPanels() {
                 streamQueue.push(...Array.from(textChunk));
 
                 if (!streamAnimation) {
-                    streamAnimation = requestAnimationFrame(flushQueue);
+                    streamAnimation = setTimeout(flushQueue, 12);
                 }
             };
 
             const flushRemaining = () => {
                 clearThinkingEffect();
                 if (streamAnimation) {
-                    cancelAnimationFrame(streamAnimation);
+                    clearTimeout(streamAnimation);
                     streamAnimation = null;
                 }
 
